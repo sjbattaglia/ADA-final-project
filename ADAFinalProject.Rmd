@@ -1,0 +1,1034 @@
+---
+title: "ACEs vs CVD"
+author: "Battaglia"
+date: "2025-11-23"
+output: html_document
+---
+
+```{r}
+install.packages(c(
+  "tidyverse", "survey", "srvyr", "gtsummary", 
+  "broom", "haven", "gt", "flextable", "tableone"
+))
+```
+
+```{r}
+
+# Load and prepare BRFSS data for ACEs-CVD analysis
+
+library(tidyverse)
+library(haven)  # For reading SAS files
+
+# STEP 1: LOAD RAW DATA
+
+#check working directory for dataset
+getwd()
+setwd("/Users/sambattaglia/Downloads")
+
+
+# Read the XPT file from directory
+brfss_raw <- read_xpt("LLCP2024.XPT ")
+
+cat(sprintf("Loaded %d observations with %d variables\n", 
+            nrow(brfss_raw), ncol(brfss_raw)))
+
+```
+ 
+ 
+```{r}
+# Check Variables
+
+cat("\nChecking for required variables...\n")
+
+# List of required variables
+required_vars <- c(
+  # Survey design variables
+  "_STATE", "_LLCPWT", "_STSTR", "_PSU",
+  
+  # ACE module variables
+  "ACEDEPRS", "ACEDRINK", "ACEDRUGS", "ACEPRISN", "ACEDIVRC",
+  "ACEPUNCH", "ACEHURT1", "ACESWEAR", "ACETOUCH", "ACETTHEM", "ACEHVSEX",
+  
+  # CVD outcome variables
+  "CVDINFR4", "CVDCRHD4", "CVDSTRK3",
+  
+  # Demographic variables
+  "_AGE_G", "_AGE80", "SEXVAR", "_RACE",
+  
+  # SES variables
+  "EDUCA", "INCOME3",
+  
+  # Lifestyle/mediator variables
+  "_SMOKER3", "ALCDAY4", "_TOTINDA", "_BMI5CAT",
+  
+  # Comorbidities
+  "GENHLTH", "DIABETE4"
+)
+  
+```
+```{r}
+# Check which variables are present
+vars_present <- required_vars[required_vars %in% names(brfss_raw)]
+vars_missing <- required_vars[!required_vars %in% names(brfss_raw)]
+
+cat(sprintf("  %d of %d required variables found\n", 
+            length(vars_present), length(required_vars)))
+```
+```{r}
+# Filter to ACE Module States
+
+cat("\nFiltering to states with ACE module...\n")
+
+# States with ACE module in 2024
+ace_states <- c(4, 12, 13, 15, 19, 23, 32, 38, 39, 40, 51)
+state_names <- c("Arizona", "Florida", "Georgia", "Hawaii", "Iowa", 
+                 "Maine", "Nevada", "North Dakota", "Ohio", "Oklahoma", "Virginia")
+
+brfss_ace <- brfss_raw %>%
+  filter(`_STATE` %in% ace_states)
+
+cat(sprintf("  Retained %d observations from %d states\n",
+            nrow(brfss_ace), length(ace_states)))
+```
+```{r}
+# Show sample by state
+state_summary <- brfss_ace %>%
+  count(`_STATE`) %>%
+  left_join(
+    tibble(`_STATE` = ace_states, state_name = state_names),
+    by = "_STATE"
+  ) %>%
+  arrange(`_STATE`)
+
+cat("\nSample size by state:\n")
+print(state_summary, n = Inf)
+```
+
+```{r}
+# Check Preliminary Data
+
+
+cat("\n=== DATA QUALITY CHECKS ===\n")
+
+# Check ACE variables
+cat("\nACE Variables - Value Distributions:\n")
+ace_vars <- c("ACEDEPRS", "ACEDRINK", "ACEDRUGS", "ACEPRISN", "ACEDIVRC",
+              "ACEPUNCH", "ACEHURT", "ACESWEAR", "ACETOUCH", "ACETTHEM", "ACEHVSEX")
+
+for (var in ace_vars) {
+  if (var %in% names(brfss_ace)) {
+    dist <- table(brfss_ace[[var]], useNA = "always")
+    cat(sprintf("  %s: ", var))
+    cat(paste(names(dist), "=", dist, collapse = ", "), "\n")
+  }
+}
+```
+
+```{r}
+# Check CVD variables
+cat("\nCVD Outcome Variables:\n")
+cvd_vars <- c("CVDINFR4", "CVDCRHD4", "CVDSTRK3")
+
+for (var in cvd_vars) {
+  if (var %in% names(brfss_ace)) {
+    dist <- table(brfss_ace[[var]], useNA = "always")
+    cat(sprintf("  %s: ", var))
+    cat(paste(names(dist), "=", dist, collapse = ", "), "\n")
+  }
+}
+
+```
+```{r}
+# Check survey weight (_LLCPWT)
+cat("\nSurvey Weight (_LLCPWT):\n")
+cat(sprintf("  Range: %.2f to %.2f\n", 
+            min(brfss_ace$`_LLCPWT`, na.rm = TRUE),
+            max(brfss_ace$`_LLCPWT`, na.rm = TRUE)))
+cat(sprintf("  Mean: %.2f\n", mean(brfss_ace$`_LLCPWT`, na.rm = TRUE)))
+cat(sprintf("  Missing: %d (%.1f%%)\n", 
+            sum(is.na(brfss_ace$`_LLCPWT`)),
+            mean(is.na(brfss_ace$`_LLCPWT`)) * 100))
+
+
+```
+```{r}
+# SAVE the new data
+
+cat("\nSaving prepared dataset...\n")
+
+# Save as R data file
+saveRDS(brfss_ace, "/Users/sambattaglia/Downloads/brfss_2024_ace_states.rds")
+cat("  Saved to: brfss_2024_ace_states.rds\n")
+
+# Optionally save as CSV for inspection
+write_csv(brfss_ace %>% select(all_of(required_vars[required_vars %in% names(brfss_ace)])),
+          "/Users/sambattaglia/Downloads/brfss_2024_subset.csv")
+cat("  Subset saved to: brfss_2024_subset.csv\n")
+
+```
+```{r}
+# Summary Statistics
+
+summary_stats <- list(
+  total_observations = nrow(brfss_ace),
+  n_states = length(unique(brfss_ace$'_STATE')),
+  variables_present = length(vars_present),
+  variables_missing = length(vars_missing),
+  
+  # ACE completeness
+  ace_complete = sum(complete.cases(brfss_ace[, ace_vars[ace_vars %in% names(brfss_ace)]])),
+  
+  # CVD completeness  
+  cvd_complete = sum(complete.cases(brfss_ace[, cvd_vars[cvd_vars %in% names(brfss_ace)]]))
+)
+```
+```{r}
+cat(sprintf("Total observations: %d\n", summary_stats$total_observations))
+cat(sprintf("Number of states: %d\n", summary_stats$n_states))
+cat(sprintf("Required variables found: %d/%d\n", 
+            summary_stats$variables_present,
+            length(required_vars)))
+cat(sprintf("Complete ACE data: %d (%.1f%%)\n",
+            summary_stats$ace_complete,
+            summary_stats$ace_complete / nrow(brfss_ace) * 100))
+cat(sprintf("Complete CVD data: %d (%.1f%%)\n",
+            summary_stats$cvd_complete,
+            summary_stats$cvd_complete / nrow(brfss_ace) * 100))
+```
+```{r}
+cat("\nPrepared dataset saved to:\n")
+cat("  /mnt/user-data/outputs/brfss_2024_ace_states.rds\n")
+
+```
+```{r}
+# Load required packages
+library(tidyverse)      # Data manipulation
+library(survey)         # Complex survey design
+library(srvyr)          # dplyr-style survey functions  
+library(gtsummary)      # Publication-ready tables
+library(broom)          # Tidy model outputs
+library(mice)           # Multiple imputation (if needed)
+library(tableone)       # Descriptive statistics
+```
+```{r}
+# Set options
+options(survey.lonely.psu = "adjust")
+options(scipen = 999)  # Avoid scientific notation
+```
+
+```{r}
+# BRFSS typically uses _LLCPWT for weight, _STSTR for strata, _PSU for PSU
+brfss4 <- brfss_raw %>%
+  filter(`_STATE` %in% ace_states) %>%
+  # Remove leading underscores from variable names (R convention)
+  rename(
+    STATE = `_STATE`,
+    LLCPWT = `_LLCPWT`,     # Final weight variable
+    STSTR = `_STSTR`,       # Stratum variable
+    PSU = `_PSU`            # Primary Sampling Unit
+  )
+```
+
+```{r}
+# Make ACE composite Score
+
+cat("Creating ACE composite score...\n")
+
+# Recode ACE variables: 1=Yes, 2=No, 7=Don't know, 9=Refused, BLANK=Not asked
+# Convert to binary: 1=exposed, 0=not exposed, NA=missing/unknown
+
+ace_vars <- c("ACEDEPRS", "ACEDRINK", "ACEDRUGS", "ACEPRISN", "ACEDIVRC",
+              "ACEPUNCH", "ACEHURT1", "ACESWEAR", "ACETOUCH", "ACETTHEM", "ACEHVSEX")
+
+```
+
+```{r}
+# Recode ACE variables with CORRECT coding
+# Most ACE variables: 1=Yes, 2=No
+# BUT some (like ACEHURT1) have frequencies: 1=Never, 2=Once, 3=More than once
+
+brfss4 <- brfss4 %>%
+  mutate(
+    # Simple Yes/No variables (1=Yes, 2=No)
+    ACEDEPRS_binary = case_when(
+      ACEDEPRS == 1 ~ 1,
+      ACEDEPRS == 2 ~ 0,
+      ACEDEPRS %in% c(7, 9) ~ NA_real_,
+      TRUE ~ NA_real_
+    ),
+    ACEDRINK_binary = case_when(
+      ACEDRINK == 1 ~ 1,
+      ACEDRINK == 2 ~ 0,
+      ACEDRINK %in% c(7, 9) ~ NA_real_,
+      TRUE ~ NA_real_
+    ),
+    ACEDRUGS_binary = case_when(
+      ACEDRUGS == 1 ~ 1,
+      ACEDRUGS == 2 ~ 0,
+      ACEDRUGS %in% c(7, 9) ~ NA_real_,
+      TRUE ~ NA_real_
+    ),
+    ACEPRISN_binary = case_when(
+      ACEPRISN == 1 ~ 1,
+      ACEPRISN == 2 ~ 0,
+      ACEPRISN %in% c(7, 9) ~ NA_real_,
+      TRUE ~ NA_real_
+    ),
+    ACEDIVRC_binary = case_when(
+      ACEDIVRC == 1 ~ 1,
+      ACEDIVRC == 2 ~ 0,
+      ACEDIVRC %in% c(7, 9) ~ NA_real_,
+      TRUE ~ NA_real_
+    ),
+    
+    # FREQUENCY variables (1=Never, 2=Once, 3=More than once)
+    # Count as exposed if 2 OR 3
+    ACEPUNCH_binary = case_when(
+      ACEPUNCH %in% c(2, 3) ~ 1,  # Once or more than once = exposed
+      ACEPUNCH == 1 ~ 0,           # Never = not exposed
+      ACEPUNCH %in% c(7, 9) ~ NA_real_,
+      TRUE ~ NA_real_
+    ),
+    ACEHURT1_binary = case_when(
+      ACEHURT1 %in% c(2, 3) ~ 1,
+      ACEHURT1 == 1 ~ 0,
+      ACEHURT1 %in% c(7, 9) ~ NA_real_,
+      TRUE ~ NA_real_
+    ),
+    ACESWEAR_binary = case_when(
+      ACESWEAR %in% c(2, 3) ~ 1,
+      ACESWEAR == 1 ~ 0,
+      ACESWEAR %in% c(7, 9) ~ NA_real_,
+      TRUE ~ NA_real_
+    ),
+    ACETOUCH_binary = case_when(
+      ACETOUCH %in% c(2, 3) ~ 1,
+      ACETOUCH == 1 ~ 0,
+      ACETOUCH %in% c(7, 9) ~ NA_real_,
+      TRUE ~ NA_real_
+    ),
+    ACETTHEM_binary = case_when(
+      ACETTHEM %in% c(2, 3) ~ 1,
+      ACETTHEM == 1 ~ 0,
+      ACETTHEM %in% c(7, 9) ~ NA_real_,
+      TRUE ~ NA_real_
+    ),
+    ACEHVSEX_binary = case_when(
+      ACEHVSEX %in% c(2, 3) ~ 1,
+      ACEHVSEX == 1 ~ 0,
+      ACEHVSEX %in% c(7, 9) ~ NA_real_,
+      TRUE ~ NA_real_
+    )
+  )
+
+```
+```{r}
+# Calculate ACE score (sum of binary ACE variables)
+brfss4 <- brfss4 %>%
+  rowwise() %>%
+  mutate(
+    ace_score = sum(c_across(ends_with("_binary")), na.rm = FALSE),
+    # If any ACE variable is NA, set score to NA
+    ace_score = if_else(
+      any(is.na(c_across(ends_with("_binary")))),
+      NA_real_,
+      ace_score
+    )
+  ) %>%
+  ungroup()
+```
+```{r}
+# Create categorical ACE variable following CDC recommendations
+brfss4 <- brfss4 %>%
+  mutate(
+    ace_cat = case_when(
+      ace_score == 0 ~ "None (0)",
+      ace_score == 1 ~ "Low (1)",
+      ace_score %in% 2:3 ~ "Medium (2-3)",
+      ace_score >= 4 ~ "High (≥4)",
+      TRUE ~ NA_character_
+    ),
+    ace_cat = factor(ace_cat, levels = c("None (0)", "Low (1)", "Medium (2-3)", "High (≥4)"))
+  )
+```
+
+```{r}
+# Create CVD variable
+
+cat("Creating CVD outcome variable...\n")
+
+# CVD variables: CVDINFR4 (MI), CVDCRHD4 (CHD), CVDSTRK3 (stroke)
+# 1=Yes, 2=No, 7=Don't know, 9=Refused
+
+brfss4 <- brfss4 %>%
+  mutate(
+    # Create binary CVD indicators
+    mi = if_else(CVDINFR4 == 1, 1, if_else(CVDINFR4 == 2, 0, NA_real_)),
+    chd = if_else(CVDCRHD4 == 1, 1, if_else(CVDCRHD4 == 2, 0, NA_real_)),
+    stroke = if_else(CVDSTRK3 == 1, 1, if_else(CVDSTRK3 == 2, 0, NA_real_)),
+    
+    # Combined CVD outcome (any of the three conditions)
+    cvd = if_else(
+      mi == 1 | chd == 1 | stroke == 1, 
+      1, 
+      if_else(!is.na(mi) & !is.na(chd) & !is.na(stroke) & 
+                mi == 0 & chd == 0 & stroke == 0, 0, NA_real_)
+    )
+  )
+```
+
+```{r}
+# Create Covariate / Mediators
+
+cat("Creating covariates and mediator variables...\n")
+
+brfss4 <- brfss4 %>%
+  mutate(
+    # Age groups (using _AGE_G)
+    age_group = case_when(
+      `_AGE_G` %in% 1:2 ~ "18-34",
+      `_AGE_G` %in% 3:4 ~ "35-54", 
+      `_AGE_G` == 5 ~ "55-64",
+      `_AGE_G` == 6 ~ "65+",
+      TRUE ~ NA_character_
+    ),
+    age_group = factor(age_group, levels = c("18-34", "35-54", "55-64", "65+")),
+    
+    # Sex
+    sex = case_when(
+      SEXVAR == 1 ~ "Male",
+      SEXVAR == 2 ~ "Female",
+      TRUE ~ NA_character_
+    ),
+    sex = factor(sex, levels = c("Male", "Female")),
+    
+    # Race/Ethnicity (using calculated variable _RACE)
+    race_eth = case_when(
+      `_RACE` == 1 ~ "White, non-Hispanic",
+      `_RACE` == 2 ~ "Black, non-Hispanic",
+      `_RACE` == 3 ~ "Asian, non-Hispanic",
+      `_RACE` == 4 ~ "AI/AN, non-Hispanic",
+      `_RACE` == 5 ~ "Hispanic",
+      `_RACE` %in% 6:7 ~ "Other/Multiracial",
+      TRUE ~ NA_character_
+    ),
+    
+    # Education
+    education = case_when(
+      EDUCA %in% 1:3 ~ "< High school",
+      EDUCA == 4 ~ "High school graduate",
+      EDUCA == 5 ~ "Some college",
+      EDUCA == 6 ~ "College graduate",
+      TRUE ~ NA_character_
+    ),
+    education = factor(education, levels = c("< High school", "High school graduate", 
+                                              "Some college", "College graduate")),
+    
+    # Income
+    income = case_when(
+      INCOME3 %in% 1:4 ~ "< $25,000",
+      INCOME3 %in% 5:6 ~ "$25,000-$49,999",
+      INCOME3 %in% 7:8 ~ "$50,000-$99,999",
+      INCOME3 %in% 9:11 ~ "≥ $100,000",
+      TRUE ~ NA_character_
+    ),
+    income = factor(income, levels = c("< $25,000", "$25,000-$49,999", 
+                                       "$50,000-$99,999", "≥ $100,000")),
+    
+    # Smoking status (using calculated variable _SMOKER3)
+    smoking = case_when(
+      `_SMOKER3` == 1 ~ "Current smoker",
+      `_SMOKER3` == 2 ~ "Former smoker",
+      `_SMOKER3` %in% 3:4 ~ "Never smoker",
+      TRUE ~ NA_character_
+    ),
+    smoking = factor(smoking, levels = c("Never smoker", "Former smoker", "Current smoker")),
+    
+    # Alcohol use (ALCDAY4 - days drinking in past 30 days)
+    # Recode to binary: any drinking vs none
+    # Values: 101-130 = days in month, 201-207 = days in week (need to convert)
+    #         888 = None, 777 = Don't know, 999 = Refused
+    alcohol_days = case_when(
+      ALCDAY4 >= 101 & ALCDAY4 <= 130 ~ ALCDAY4 - 100,  # Days per month
+      ALCDAY4 >= 201 & ALCDAY4 <= 207 ~ (ALCDAY4 - 200) * 4,  # Days per week * 4
+      ALCDAY4 == 888 ~ 0,  # No drinks
+      TRUE ~ NA_real_
+    ),
+    any_alcohol = if_else(alcohol_days > 0, 1, if_else(alcohol_days == 0, 0, NA_real_)),
+    # Create heavy drinking indicator (>14 days/month as proxy)
+    heavy_drinking = if_else(alcohol_days > 14, 1, if_else(!is.na(alcohol_days), 0, NA_real_)),
+    
+    # Physical activity (_TOTINDA)
+    # 1=Had physical activity, 2=No physical activity
+    phys_activity = if_else(`_TOTINDA` == 1, 1, if_else(`_TOTINDA` == 2, 0, NA_real_)),
+    
+    # BMI categories (_BMI5CAT)
+    bmi_cat = case_when(
+      `_BMI5CAT` == 1 ~ "Underweight",
+      `_BMI5CAT` == 2 ~ "Normal weight",
+      `_BMI5CAT` == 3 ~ "Overweight",
+      `_BMI5CAT` == 4 ~ "Obese",
+      TRUE ~ NA_character_
+    ),
+    bmi_cat = factor(bmi_cat, levels = c("Underweight", "Normal weight", 
+                                         "Overweight", "Obese")),
+    
+    # General Health Status (GENHLTH) - using as proxy for overall health
+    # 1=Excellent, 2=Very good, 3=Good, 4=Fair, 5=Poor
+    gen_health = case_when(
+      GENHLTH %in% 1:2 ~ "Excellent/Very Good",
+      GENHLTH == 3 ~ "Good",
+      GENHLTH %in% 4:5 ~ "Fair/Poor",
+      TRUE ~ NA_character_
+    ),
+    gen_health = factor(gen_health, levels = c("Excellent/Very Good", "Good", "Fair/Poor")),
+    
+    # Diabetes (DIABETE4)
+    diabetes = case_when(
+      DIABETE4 %in% 1:2 ~ 1,  # Yes or Yes during pregnancy
+      DIABETE4 %in% 3:4 ~ 0,  # No or prediabetes
+      TRUE ~ NA_real_
+    )
+  )
+```
+
+
+```{r}
+# Apply Exclusion Criteria
+
+cat("\n=== APPLYING EXCLUSION CRITERIA ===\n\n")
+
+# Report starting sample
+cat(sprintf("Starting sample (all states): %d\n", nrow(brfss4)))
+
+# Step 1: Keep only people who were asked ACE questions
+brfss_with_ace <- brfss4 %>%
+  filter(!is.na(ace_cat))
+
+cat(sprintf("After requiring ACE data: %d (%.1f%% retained)\n", 
+            nrow(brfss_with_ace),
+            nrow(brfss_with_ace)/nrow(brfss4)*100))
+
+# Step 2: Keep only those with CVD outcome data
+brfss_with_cvd <- brfss_with_ace %>%
+  filter(!is.na(cvd))
+
+cat(sprintf("After requiring CVD data: %d (%.1f%% retained)\n", 
+            nrow(brfss_with_cvd),
+            nrow(brfss_with_cvd)/nrow(brfss4)*100))
+
+# Step 3: Restrict to complete cases on all covariates
+# This handles missing data on: income, heavy_drinking, race_eth, and other covariates
+brfss_analytic <- brfss_with_cvd %>%
+  filter(
+    complete.cases(age_group, sex, race_eth, education, income,
+                   smoking, heavy_drinking, phys_activity, bmi_cat,
+                   gen_health, diabetes)
+  )
+
+cat(sprintf("After requiring complete covariate data: %d (%.1f%% retained from step 2)\n", 
+            nrow(brfss_analytic),
+            nrow(brfss_analytic)/nrow(brfss_with_cvd)*100))
+
+cat(sprintf("\n✓ Final analytic sample: %d participants\n", nrow(brfss_analytic)))
+
+# Display final ACE distribution
+cat("\nFinal ACE Category Distribution:\n")
+ace_dist <- table(brfss_analytic$ace_cat)
+print(ace_dist)
+cat("\nPercentages:\n")
+print(round(prop.table(ace_dist)*100, 1))
+
+cat("\n=== EXCLUSION CRITERIA APPLIED ===\n")
+```
+
+
+```{r}
+# Check if survey design variables exist
+c("PSU", "STSTR", "LLCPWT") %in% names(brfss_analytic)
+
+# If FALSE, check if they have underscores
+c("_PSU", "_STSTR", "_LLCPWT") %in% names(brfss_analytic)
+
+```
+```{r}
+cat("Setting up complex survey design object...\n")
+
+# Create survey design object
+brfss_svy <- brfss_analytic %>%
+  as_survey_design(
+    ids = PSU,           # Primary sampling unit
+    strata = STSTR,      # Stratum
+    weights = LLCPWT,    # Final weight
+    nest = TRUE          # PSUs are nested within strata
+  )
+```
+
+```{r}
+# weighted descriptives
+
+cat("\n=== GENERATING WEIGHTED DESCRIPTIVE STATISTICS ===\n")
+
+# Overall sample characteristics
+desc_overall <- brfss_svy %>%
+  summarise(
+    n = n(),
+    n_weighted = survey_total(vartype = "ci"),
+    cvd_prev = survey_mean(cvd, na.rm = TRUE, vartype = "ci") * 100,
+    mean_age = survey_mean(`_AGE80`, na.rm = TRUE, vartype = "ci")
+  )
+
+print("Overall Sample Characteristics:")
+print(desc_overall)
+
+# Characteristics by ACE category
+desc_by_ace <- brfss_svy %>%
+  group_by(ace_cat) %>%
+  summarise(
+    n = n(),
+    n_weighted = survey_total(vartype = "ci"),
+    cvd_prev = survey_mean(cvd, na.rm = TRUE, vartype = "ci") * 100,
+    mean_age = survey_mean(`_AGE80`, na.rm = TRUE, vartype = "ci"),
+    pct_female = survey_mean(sex == "Female", na.rm = TRUE, vartype = "ci") * 100,
+    pct_smoking = survey_mean(smoking == "Current smoker", na.rm = TRUE, vartype = "ci") * 100,
+    pct_heavy_drink = survey_mean(heavy_drinking == 1, na.rm = TRUE, vartype = "ci") * 100
+  )
+
+print("\nCharacteristics by ACE Category:")
+print(desc_by_ace)
+
+```
+
+```{r}
+# Create comprehensive Table 1
+table1 <- brfss_svy %>%
+  tbl_svysummary(
+    by = ace_cat,
+    include = c(age_group, sex, race_eth, education, income, 
+                smoking, heavy_drinking, phys_activity, bmi_cat,
+                gen_health, diabetes, cvd),
+    label = list(
+      age_group ~ "Age Group",
+      sex ~ "Sex",
+      race_eth ~ "Race/Ethnicity",
+      education ~ "Education",
+      income ~ "Annual Household Income",
+      smoking ~ "Smoking Status",
+      heavy_drinking ~ "Heavy Drinking",
+      phys_activity ~ "Physical Activity",
+      bmi_cat ~ "BMI Category",
+      gen_health ~ "General Health",
+      diabetes ~ "Diabetes",
+      cvd ~ "Cardiovascular Disease"
+    ),
+    statistic = all_categorical() ~ "{n} ({p}%)",
+    digits = all_continuous() ~ 1,
+    missing = "no"
+  ) %>%
+  add_overall() %>%
+  add_p() %>%
+  modify_header(label ~ "**Characteristic**") %>%
+  modify_spanning_header(all_stat_cols() ~ "**ACE Score**") %>%
+  bold_labels()
+
+print(table1)
+
+# Save Table 1
+table1 %>%
+  as_flex_table() %>%
+  flextable::save_as_docx(path = "/Users/sambattaglia/Downloads/Table1_Descriptive_Statistics1.docx")
+
+```
+```{r}
+# 8. PRIMARY ANALYSIS: Association between ACEs and CVD
+
+
+cat("\n=== PRIMARY ANALYSIS: LOGISTIC REGRESSION MODELS ===\n")
+
+# Model 1: Unadjusted
+model1 <- svyglm(
+  cvd ~ ace_cat,
+  design = brfss_svy,
+  family = quasibinomial(link = "logit")
+)
+
+# Model 2: Adjusted for demographics and SES
+model2 <- svyglm(
+  cvd ~ ace_cat + age_group + sex + race_eth + education + income,
+  design = brfss_svy,
+  family = quasibinomial(link = "logit")
+)
+```
+```{r}
+# Model 3: Further adjusted for lifestyle factors and mediators
+model3 <- svyglm(
+  cvd ~ ace_cat + age_group + sex + race_eth + education + income +
+    smoking + heavy_drinking + phys_activity + bmi_cat + gen_health + diabetes,
+  design = brfss_svy,
+  family = quasibinomial(link = "logit")
+)
+
+# Extract and format results
+extract_or_results <- function(model, model_name) {
+  results <- tidy(model, conf.int = TRUE, exponentiate = TRUE) %>%
+    filter(str_detect(term, "ace_cat")) %>%
+    mutate(
+      model = model_name,
+      OR = round(estimate, 2),
+      CI_lower = round(conf.low, 2),
+      CI_upper = round(conf.high, 2),
+      p_value = format.pval(p.value, digits = 3, eps = 0.001),
+      OR_CI = sprintf("%.2f (%.2f-%.2f)", estimate, conf.low, conf.high)
+    ) %>%
+    select(model, term, OR, CI_lower, CI_upper, p_value, OR_CI)
+  
+  return(results)
+}
+
+results_model1 <- extract_or_results(model1, "Model 1: Unadjusted")
+results_model2 <- extract_or_results(model2, "Model 2: Demographics + SES")
+results_model3 <- extract_or_results(model3, "Model 3: Full Model")
+
+# Combine all results
+results_combined <- bind_rows(
+  results_model1,
+  results_model2,
+  results_model3
+)
+
+print("\nLogistic Regression Results:")
+print(results_combined)
+
+# Save results
+write.csv(results_combined, 
+          "/Users/sambattaglia/Downloads/Regression_Results_ACE_CVD1.csv",
+          row.names = FALSE)
+
+# Create publication-ready table
+library(gt)
+results_table <- results_combined %>%
+  select(model, term, OR_CI, p_value) %>%
+  mutate(term = str_remove(term, "ace_cat")) %>%
+  gt() %>%
+  tab_header(
+    title = "Association between ACE Score and Cardiovascular Disease",
+    subtitle = "Odds Ratios and 95% Confidence Intervals"
+  ) %>%
+  cols_label(
+    model = "Model",
+    term = "ACE Category",
+    OR_CI = "OR (95% CI)",
+    p_value = "P-value"
+  ) %>%
+  tab_footnote(
+    footnote = "Reference group: None (0 ACEs)",
+    locations = cells_column_labels(columns = term)
+  ) %>%
+  tab_footnote(
+    footnote = "Model 1: Unadjusted; Model 2: Adjusted for age, sex, race/ethnicity, education, income; Model 3: Model 2 + smoking, alcohol, physical activity, BMI, general health, diabetes",
+    locations = cells_title(groups = "subtitle")
+  )
+
+# Save as HTML
+gtsave(results_table, "/Users/sambattaglia/Downloads/Table2_Regression_Results1.html")
+
+```
+```{r}
+# 9. SECONDARY ANALYSIS: Test for Trend
+
+cat("\n=== TESTING FOR LINEAR TREND ACROSS ACE CATEGORIES ===\n")
+
+# Treat ACE as continuous for trend test
+brfss_svy_trend <- brfss_svy %>%
+  mutate(ace_numeric = case_when(
+    ace_cat == "None (0)" ~ 0,
+    ace_cat == "Low (1)" ~ 1,
+    ace_cat == "Medium (2-3)" ~ 2.5,
+    ace_cat == "High (≥4)" ~ 4,
+    TRUE ~ NA_real_
+  ))
+```
+
+
+```{r}
+trend_model <- svyglm(
+  cvd ~ ace_numeric + age_group + sex + race_eth + education + income +
+    smoking + heavy_drinking + phys_activity + bmi_cat + gen_health + diabetes,
+  design = brfss_svy_trend,
+  family = quasibinomial(link = "logit")
+)
+
+trend_result <- tidy(trend_model, conf.int = TRUE, exponentiate = TRUE) %>%
+  filter(term == "ace_numeric") %>%
+  mutate(
+    OR = round(estimate, 3),
+    CI = sprintf("%.3f-%.3f", conf.low, conf.high),
+    p_value = format.pval(p.value, digits = 3, eps = 0.001)
+  )
+
+print("\nTrend Test Results:")
+print(trend_result)
+```
+
+```{r}
+# Stratified by SES
+
+cat("\n=== STRATIFIED ANALYSIS BY INCOME ===\n")
+
+# Test for effect modification by income
+# Create high/low income groups
+brfss_svy_income <- brfss_svy %>%
+  mutate(
+    income_binary = case_when(
+      income %in% c("< $25,000", "$25,000-$49,999") ~ "Low income",
+      income %in% c("$50,000-$99,999", "≥ $100,000") ~ "High income",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(income_binary))
+```
+
+
+```{r}
+# Stratified models
+low_income_model <- svyglm(
+  cvd ~ ace_cat + age_group + sex + race_eth + education +
+    smoking + heavy_drinking + phys_activity + bmi_cat + gen_health + diabetes,
+  design = subset(brfss_svy_income, income_binary == "Low income"),
+  family = quasibinomial(link = "logit")
+)
+
+high_income_model <- svyglm(
+  cvd ~ ace_cat + age_group + sex + race_eth + education +
+    smoking + heavy_drinking + phys_activity + bmi_cat + gen_health + diabetes,
+  design = subset(brfss_svy_income, income_binary == "High income"),
+  family = quasibinomial(link = "logit")
+)
+
+# Test for interaction
+interaction_model <- svyglm(
+  cvd ~ ace_cat * income_binary + age_group + sex + race_eth + education +
+    smoking + heavy_drinking + phys_activity + bmi_cat + gen_health + diabetes,
+  design = brfss_svy_income,
+  family = quasibinomial(link = "logit")
+)
+
+# Extract results
+low_income_results <- extract_or_results(low_income_model, "Low Income") %>%
+  mutate(stratum = "Low Income")
+
+high_income_results <- extract_or_results(high_income_model, "High Income") %>%
+  mutate(stratum = "High Income")
+
+stratified_results <- bind_rows(low_income_results, high_income_results)
+
+print("\nStratified Analysis Results:")
+print(stratified_results)
+
+# Test interaction p-value
+interaction_results <- tidy(interaction_model) %>%
+  filter(str_detect(term, "ace_cat.*income_binary"))
+
+print("\nInteraction Test:")
+print(interaction_results)
+
+```
+
+```{r}
+# SENSITIVITY ANALYSIS: Missing Data Assessment
+
+cat("\n=== MISSING DATA ASSESSMENT ===\n")
+
+# Calculate missingness for key variables IN THE ANALYTIC SAMPLE
+missing_summary <- brfss_analytic %>%  # ← Use analytic sample!
+  select(age_group, sex, race_eth, education, income,
+         smoking, heavy_drinking, phys_activity, bmi_cat, 
+         gen_health, diabetes) %>%  # Don't include ace_cat or cvd (we filtered on these)
+  summarise(across(everything(), ~sum(is.na(.)))) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "n_missing") %>%
+  mutate(
+    total_n = nrow(brfss_analytic),
+    pct_missing = round(n_missing / total_n * 100, 2)
+  ) %>%
+  arrange(desc(pct_missing))
+
+print("\nMissingness Summary (Analytic Sample Only):")
+print(missing_summary)
+
+# Visual summary
+cat("\n\nVariables with >5% missing:\n")
+high_missing <- missing_summary %>% 
+  filter(pct_missing > 5)
+
+if(nrow(high_missing) > 0) {
+  print(high_missing)
+  cat("\n⚠️ Note: Variables with >5% missing may need imputation or sensitivity analysis\n")
+} else {
+  cat("✓ All variables have <5% missing data - complete case analysis is appropriate\n")
+}
+
+# Summary statement
+cat(sprintf("\n\nAnalytic Sample Summary:\n"))
+cat(sprintf("  Total N: %d\n", nrow(brfss_analytic)))
+cat(sprintf("  Complete cases (no missing covariates): %d (%.1f%%)\n",
+            sum(complete.cases(brfss_analytic[, c("age_group", "sex", "race_eth", 
+                                                    "education", "income", "smoking", 
+                                                    "heavy_drinking", "phys_activity", 
+                                                    "bmi_cat", "gen_health", "diabetes")])),
+            mean(complete.cases(brfss_analytic[, c("age_group", "sex", "race_eth", 
+                                                     "education", "income", "smoking", 
+                                                     "heavy_drinking", "phys_activity", 
+                                                     "bmi_cat", "gen_health", "diabetes")])) * 100))
+```
+
+Following literature we are opting for a complete case analysis while using the BRFSS data
+
+```{r}
+# Create Visualizations
+# Create the summary and see what columns it makes
+fig1_data <- brfss_svy %>%
+  group_by(ace_cat) %>%
+  summarise(
+    cvd_prev = survey_mean(cvd, na.rm = TRUE, vartype = "ci") * 100
+  )
+
+# Look at the structure
+print(names(fig1_data))
+print(head(fig1_data))
+
+
+```
+
+```{r}
+
+# create visualizations continued
+
+
+cat("\n=== CREATING VISUALIZATIONS ===\n")
+
+# Figure 1: CVD Prevalence by ACE Category
+fig1_data <- brfss_svy %>%
+  group_by(ace_cat) %>%
+  summarise(
+    cvd_prev = survey_mean(cvd, na.rm = TRUE, vartype = "ci") * 100
+  )
+
+# Note: The * 100 converts ALL columns (mean and CIs) to percentages automatically
+# So cvd_prev, cvd_prev_low, cvd_prev_upp are all already in percentage scale
+
+fig1 <- ggplot(fig1_data, aes(x = ace_cat, y = cvd_prev)) +
+  geom_col(fill = "steelblue", alpha = 0.8) +
+  geom_errorbar(aes(ymin = cvd_prev_low, ymax = cvd_prev_upp), 
+                width = 0.2, size = 1) +
+  labs(
+    title = "Prevalence of Cardiovascular Disease by ACE Category",
+    subtitle = "BRFSS 2024, Weighted Estimates",
+    x = "ACE Score Category",
+    y = "CVD Prevalence (%)",
+    caption = "Error bars represent 95% confidence intervals"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+ggsave("/Users/sambattaglia/Downloads/Figure1_CVD_Prevalence_by_ACE.png", 
+       fig1, width = 8, height = 6, dpi = 300)
+
+cat("✓ Figure 1 saved!\n")
+```
+
+```{r}
+# Figure 2: Forest Plot of Odds Ratios
+fig2_data <- results_combined %>%
+  filter(model == "Model 3: Full Model") %>%
+  mutate(
+    ace_category = str_remove(term, "ace_cat"),
+    ace_category = factor(ace_category, 
+                          levels = c("High (≥4)", "Medium (2-3)", "Low (1)"))
+  )
+
+fig2 <- ggplot(fig2_data, aes(x = OR, y = ace_category)) +
+  geom_point(size = 4, color = "darkred") +
+  geom_errorbarh(aes(xmin = CI_lower, xmax = CI_upper), 
+                 height = 0.2, size = 1, color = "darkred") +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "gray50") +
+  labs(
+    title = "Adjusted Odds Ratios for CVD by ACE Category",
+    subtitle = "Reference: None (0 ACEs)",
+    x = "Odds Ratio (95% CI)",
+    y = "ACE Category"
+  ) +
+  scale_x_log10(breaks = c(0.5, 1, 2, 3, 4, 5)) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    panel.grid.major.y = element_blank()
+  )
+
+ggsave("/Users/sambattaglia/Downloads/Figure2_Forest_Plot_ORs.png", 
+       fig2, width = 8, height = 5, dpi = 300)
+```
+
+```{r}
+# Analysis Summary
+
+cat("\n=== GENERATING SUMMARY REPORT ===\n")
+
+# Create summary document
+summary_report <- list(
+  study_info = list(
+    title = "Association between Adverse Childhood Experiences and Cardiovascular Disease",
+    data_source = "BRFSS 2024",
+    analysis_date = Sys.Date(),
+    sample_size = nrow(brfss_analytic)
+  ),
+  
+  key_findings = list(
+    overall_cvd_prev = desc_overall$cvd_prev,
+    ace_high_or = results_model3 %>% filter(str_detect(term, "High")) %>% pull(OR_CI),
+    trend_p = trend_result$p_value
+  ),
+  
+  files_created = c(
+    "Table1_Descriptive_Statistics.docx",
+    "Table2_Regression_Results.html",
+    "Regression_Results_ACE_CVD.csv",
+    "Figure1_CVD_Prevalence_by_ACE.png",
+    "Figure2_Forest_Plot_ORs.png"
+  )
+)
+
+# Save summary
+saveRDS(summary_report, "/Users/sambattaglia/Downloads/analysis_summary.rds")
+cat("\nAnalysis summary saved to analysis_summary.rds\n")
+
+
+```
+```{r}
+summary <- readRDS("/Users/sambattaglia/Downloads/analysis_summary.rds")
+
+# See what's in it
+str(summary)
+
+# View specific parts
+summary$sample_size
+summary$ace_distribution
+```
+```{r}
+# Save final cleaned dataset (19,993 people, ready for analysis)
+saveRDS(brfss_analytic, 
+        file = "/Users/sambattaglia/Downloads/brfss_analytic_final.rds")
+
+cat("✓ Final analytic dataset saved!\n")
+```
+
+```{r}
+# Save the survey design object (includes weights, strata, PSUs)
+saveRDS(brfss_svy, 
+        file = "/Users/sambattaglia/Downloads/brfss_survey_design.rds")
+
+cat("✓ Survey design object saved!\n")
+```
+
